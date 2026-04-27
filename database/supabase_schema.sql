@@ -102,7 +102,9 @@ CREATE POLICY "Admins can view all messages" ON messages FOR SELECT USING (is_ad
 
 -- POLICIES: DISEASES
 CREATE POLICY "Public read access for active diseases" ON diseases FOR SELECT USING (is_active = TRUE);
-CREATE POLICY "Admins can manage diseases" ON diseases ALL USING (is_admin());
+CREATE POLICY "Admins can insert diseases" ON diseases FOR INSERT WITH CHECK (is_admin());
+CREATE POLICY "Admins can update diseases" ON diseases FOR UPDATE USING (is_admin());
+CREATE POLICY "Admins can delete diseases" ON diseases FOR DELETE USING (is_admin());
 
 -- 8. TRIGGERS FOR UPDATED_AT
 CREATE OR REPLACE FUNCTION update_updated_at_column()
