@@ -1,5 +1,10 @@
-
+import { createClient } from '@supabase/supabase-js';
 import { User, Consultation, Message, Disease } from '../types';
+
+const SUPABASE_URL = 'https://mqntfkazmhhlzkrstwxw.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xbnRma2F6bWhobHprcnN0d3h3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NzQ0MDAsImV4cCI6MjA2LjA0NjQwMDB9.Z7uI9Qq0Z0K8u8W3L7N5vH9yT2r6X8c4P1m9B0n2D';
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const generateMedicalDB = (): Disease[] => {
   const base: Disease[] = [
@@ -70,7 +75,6 @@ const generateMedicalDB = (): Disease[] => {
     }
   ];
 
-  // Logic to generate more diverse cases up to ~100
   const categories = ['Respiratory', 'Gastrointestinal', 'Neurological', 'Cardiovascular', 'Dermatological', 'Musculoskeletal', 'Psychological'];
   const severities: ('mild' | 'moderate' | 'severe')[] = ['mild', 'moderate', 'severe'];
   
@@ -88,7 +92,7 @@ const generateMedicalDB = (): Disease[] => {
       symptoms: [{name: cat.toLowerCase(), frequency: 'common'}, {name: 'pain', frequency: 'very common'}],
       diagnosticQuestions: [`Question about ${cat} status?`, 'When did it start?'],
       isActive: true,
-      treatmentProtocols: base[0].treatmentProtocols // Reusing template for brevity in generation
+      treatmentProtocols: base[0].treatmentProtocols
     });
   }
 
@@ -98,16 +102,82 @@ const generateMedicalDB = (): Disease[] => {
 const INITIAL_DISEASES = generateMedicalDB();
 
 class DBService {
-  private users: User[] = JSON.parse(localStorage.getItem('users') || '[]');
-  private consultations: Consultation[] = JSON.parse(localStorage.getItem('consultations') || '[]');
-  private messages: Message[] = JSON.parse(localStorage.getItem('messages') || '[]');
-  private diseases: Disease[] = JSON.parse(localStorage.getItem('diseases') || JSON.stringify(INITIAL_DISEASES));
+  private users: User[] = [];
+  private consultations: Consultation[] = [];
+  private messages: Message[] = [];
+  private diseases: Disease[] = [];
+  private initialized = false;
 
-  private save() {
-    localStorage.setItem('users', JSON.stringify(this.users));
-    localStorage.setItem('consultations', JSON.stringify(this.consultations));
-    localStorage.setItem('messages', JSON.stringify(this.messages));
-    localStorage.setItem('diseases', JSON.stringify(this.diseases));
+  async init() {
+    if (this.initialized) return;
+    
+    const storedDiseases = localStorage.getItem('diseases');
+    if (storedDiseases) {
+      this.diseases = JSON.parse(storedDiseases);
+    } else {
+      this.diseases = INITIAL_DISEASES;
+      localStorage.setItem('diseases', JSON.stringify(this.diseases));
+    }
+
+    this.initialized = true;
+  }
+
+  private async fetchFromSupabase() {
+    try {
+      const { data: consultationsData } = await supabase.from('consultations').select('*');
+      if (consultationsData) {
+        this.consultations = consultationsData.map((c: any) => ({
+          id: c.id,
+          userId: c.user_id,
+          timestamp: c.created_at,
+          chiefComplaint: c.chief_complaint || '',
+          diagnosis: c.diagnosis || '',
+          confidenceLevel: c.confidence_level || 'Medium',
+          status: c.status || 'active',
+          emergencyFlag: c.emergency_flag || false,
+          symptoms: c.symptoms_snapshot || []
+        }));
+      }
+
+      const { data: messagesData } = await supabase.from('messages').select('*');
+      if (messagesData) {
+        this.messages = messagesData.map((m: any) => ({
+          id: m.id,
+          consultationId: m.consultation_id,
+          type: m.sender_type,
+          content: m.content,
+          timestamp: m.timestamp
+        }));
+      }
+
+      const { data: usersData } = await supabase.from('profiles').select('*');
+      if (usersData) {
+        this.users = usersData.map((u: any) => ({
+          id: u.id,
+          name: u.name,
+          email: '',
+          createdAt: u.created_at
+        }));
+      }
+
+      const { data: diseasesData } = await supabase.from('diseases').select('*').eq('is_active', true);
+      if (diseasesData && diseasesData.length > 0) {
+        this.diseases = diseasesData.map((d: any) => ({
+          id: d.id,
+          name: d.name,
+          category: d.category,
+          severity: d.severity,
+          description: d.description,
+          typicalDuration: d.typical_duration,
+          symptoms: d.symptoms_json || [],
+          diagnosticQuestions: d.diagnostic_questions || [],
+          isActive: d.is_active,
+          treatmentProtocols: d.treatment_protocols_json || {}
+        }));
+      }
+    } catch (e) {
+      console.log('Using local fallback:', e);
+    }
   }
 
   getUsers() { return this.users; }
@@ -117,14 +187,25 @@ class DBService {
     return this.users.find(u => u.email === email);
   }
 
-  addUser(user: Omit<User, 'id' | 'createdAt'>) {
+  async addUser(user: Omit<User, 'id' | 'createdAt'>) {
     const newUser = { 
       ...user, 
-      id: Math.random().toString(36).substr(2, 9), 
+      id: crypto.randomUUID(), 
       createdAt: new Date().toISOString() 
     } as User;
     this.users.push(newUser);
-    this.save();
+    
+    try {
+      await supabase.from('profiles').insert({
+        id: newUser.id,
+        name: user.name,
+        role: 'patient'
+      });
+    } catch (e) {
+      console.log('Local fallback for user creation');
+    }
+    
+    localStorage.setItem('users', JSON.stringify(this.users));
     return newUser;
   }
 
@@ -145,9 +226,10 @@ class DBService {
     );
   }
   getConsultation(id: string) { return this.consultations.find(c => c.id === id); }
-  startConsultation(userId: string) {
+
+  async startConsultation(userId: string) {
     const consultation: Consultation = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       userId,
       timestamp: new Date().toISOString(),
       chiefComplaint: '',
@@ -156,15 +238,44 @@ class DBService {
       symptoms: []
     };
     this.consultations.push(consultation);
-    this.save();
+    
+    try {
+      await supabase.from('consultations').insert({
+        id: consultation.id,
+        user_id: userId,
+        chief_complaint: '',
+        status: 'active',
+        emergency_flag: false,
+        symptoms_snapshot: []
+      });
+    } catch (e) {
+      console.log('Local fallback for consultation');
+    }
+    
+    localStorage.setItem('consultations', JSON.stringify(this.consultations));
     return consultation;
   }
 
-  updateConsultation(id: string, updates: Partial<Consultation>) {
+  async updateConsultation(id: string, updates: Partial<Consultation>) {
     const index = this.consultations.findIndex(c => c.id === id);
     if (index !== -1) {
       this.consultations[index] = { ...this.consultations[index], ...updates };
-      this.save();
+      
+      try {
+        await supabase.from('consultations').update({
+          chief_complaint: updates.chiefComplaint,
+          diagnosis: updates.diagnosis,
+          confidence_level: updates.confidenceLevel,
+          status: updates.status,
+          emergency_flag: updates.emergencyFlag,
+          symptoms_snapshot: updates.symptoms,
+          completed_at: updates.status === 'completed' ? new Date().toISOString() : null
+        }).eq('id', id);
+      } catch (e) {
+        console.log('Local fallback for update');
+      }
+      
+      localStorage.setItem('consultations', JSON.stringify(this.consultations));
     }
   }
 
@@ -172,24 +283,37 @@ class DBService {
     return this.messages.filter(m => m.consultationId === consultationId);
   }
 
-  addMessage(consultationId: string, type: 'bot' | 'user', content: string) {
+  async addMessage(consultationId: string, type: 'bot' | 'user', content: string) {
     const message: Message = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       consultationId,
       type,
       content,
       timestamp: new Date().toISOString()
     };
     this.messages.push(message);
-    this.save();
+    
+    try {
+      await supabase.from('messages').insert({
+        id: message.id,
+        consultation_id: consultationId,
+        sender_type: type,
+        content: content,
+        timestamp: message.timestamp
+      });
+    } catch (e) {
+      console.log('Local fallback for message');
+    }
+    
+    localStorage.setItem('messages', JSON.stringify(this.messages));
     return message;
   }
 
   getDiseases() { return this.diseases; }
   addDisease(disease: Omit<Disease, 'id'>) {
-    const newDisease = { ...disease, id: Math.random().toString(36).substr(2, 9) };
+    const newDisease = { ...disease, id: crypto.randomUUID() };
     this.diseases.push(newDisease);
-    this.save();
+    localStorage.setItem('diseases', JSON.stringify(this.diseases));
     return newDisease;
   }
 }
